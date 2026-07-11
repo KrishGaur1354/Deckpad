@@ -68,6 +68,10 @@ INSTALLING ON THE DECK (ONE TIME)
      Back grips (L4/L5/R4/R5) and trackpads may be mapped freely in
      Steam Input; whatever they emit is what gets streamed.
 
+LAYOUT
+-------------
+<img src="https://github.com/KrishGaur1354/Deckpad/blob/main/deckpad-layout.jpg" width=500>
+
 CONFIGURATION
 -------------
 
