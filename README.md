@@ -3,7 +3,8 @@ DeckPad
 
 DeckPad turns a Steam Deck into a wireless game controller for any PC on
 the same local network. The PC sees a standard Xbox 360 controller; no
-game-side support is required.
+game-side support is required. Inspired by now broken repo of [Deckpad](https://github.com/HelloThisIsFlo/Deckpad)
+by [HelloThisIsFlo](https://github.com/HelloThisIsFlo).
 
 There is no pairing, no account, and nothing to install on the Deck. The
 sender uses the SDL2 shipped with SteamOS; the receiver ships as a
