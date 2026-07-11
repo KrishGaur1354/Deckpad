@@ -1,0 +1,15 @@
+{
+  "port": 30666,
+  "target_ip": "auto",
+  "send_rate_hz": 120,
+  "deadzone_left": 0.08,
+  "deadzone_right": 0.08,
+  "trigger_deadzone": 0.02,
+  "sensitivity_left": 1.0,
+  "sensitivity_right": 1.0,
+  "invert_left_y": false,
+  "invert_right_y": false,
+  "swap_ab": false,
+  "swap_xy": false,
+  "button_map": {}
+}
