@@ -10,6 +10,8 @@ sender uses the SDL2 shipped with SteamOS; the receiver ships as a
 standalone binary. Sender and receiver discover each other automatically
 via UDP broadcast on port 30666.
 
+[Post I made about it on slop.com](https://x.com/ThatOneKrish/status/2075829957276946452)
+
 WHAT DO I NEED?
 ---------------
 
