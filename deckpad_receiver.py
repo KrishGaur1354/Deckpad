@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""DeckPad receiver — run this on the machine you want to control.
+"""DeckPad receiver - run this on the machine you want to control.
 
 Listens for input streamed by deckpad_sender.py on the Steam Deck and
-presents it as a virtual Xbox 360 controller:
+presents it as a virtual Xbox 360 controller, plus a virtual mouse for
+the Deck's trackpad-as-mouse and gyro-aim features:
 
   Windows:  uses vgamepad (ViGEm).  Install once:  pip install vgamepad
-  Linux:    uses /dev/uinput directly — no packages needed.
+  Linux:    uses /dev/uinput directly, no packages needed.
             Run with sudo, or grant yourself uinput access (see README).
 
 Usage:
@@ -22,11 +23,12 @@ import struct
 import sys
 import time
 
-PROTO_MAGIC = b"DKP1"
-STATE_FMT = "<4sII6h"
+PROTO_MAGIC = b"DKP2"
+STATE_FMT = "<4sII9h"
 STATE_SIZE = struct.calcsize(STATE_FMT)
-DISCOVER_MSG = b"DKP1?DISCOVER"
-HERE_PREFIX = b"DKP1!HERE"
+DISCOVER_MSG = b"DKP2?DISCOVER"
+HERE_PREFIX = b"DKP2!HERE"
+RUMBLE_PREFIX = b"DKP2!RUMBLE"  # + 2 bytes: large motor, small motor (0-255)
 DEFAULT_PORT = 30666
 FAILSAFE_SECONDS = 0.5
 
@@ -49,6 +51,8 @@ BITS = {
     "ls": 7, "rs": 8, "lb": 9, "rb": 10,
     "dpad_up": 11, "dpad_down": 12, "dpad_left": 13, "dpad_right": 14,
 }
+# These bits become mouse clicks, not gamepad buttons.
+MOUSE_BITS = {"left": 15, "right": 16, "middle": 17}
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +98,16 @@ class VgamepadBackend:
         self.pad.left_trigger(value=lt * 255 // 32767)
         self.pad.right_trigger(value=rt * 255 // 32767)
         self.pad.update()
+
+    def register_rumble(self, fn):
+        """fn(large, small) with 0-255 motor speeds, called from a driver
+        thread whenever the game changes the rumble state."""
+        def cb(client, target, large_motor, small_motor, led_number, user_data):
+            fn(large_motor & 0xFF, small_motor & 0xFF)
+        try:
+            self.pad.register_notification(callback_function=cb)
+        except Exception as e:
+            print(f"rumble feedback unavailable: {e}")
 
     def close(self):
         self.pad.reset()
@@ -163,6 +177,9 @@ class UinputBackend:
         self._last[key] = value
         os.write(self.fd, struct.pack("<qqHHi", 0, 0, etype, code, value))
 
+    def register_rumble(self, fn):
+        pass  # rumble feedback is not implemented on the Linux backend
+
     def update(self, buttons, lx, ly, rx, ry, lt, rt):
         for name, code in BTN.items():
             self._emit(EV_KEY, code, buttons >> BITS[name] & 1)
@@ -186,6 +203,96 @@ class UinputBackend:
 
 
 # ---------------------------------------------------------------------------
+# Mouse injection (gyro-aim / trackpad-as-mouse from the Deck)
+# ---------------------------------------------------------------------------
+class WindowsMouse:
+    MOUSEEVENTF_MOVE = 0x0001
+    # (down flag, up flag) per mouse button bit
+    FLAGS = {
+        MOUSE_BITS["left"]: (0x0002, 0x0004),
+        MOUSE_BITS["right"]: (0x0008, 0x0010),
+        MOUSE_BITS["middle"]: (0x0020, 0x0040),
+    }
+
+    def __init__(self):
+        import ctypes
+        self.user32 = ctypes.windll.user32
+        self.last = 0
+
+    MOUSEEVENTF_WHEEL = 0x0800
+
+    def update(self, buttons, dx, dy, wheel=0):
+        if dx or dy:
+            self.user32.mouse_event(self.MOUSEEVENTF_MOVE, dx, dy, 0, 0)
+        if wheel:
+            self.user32.mouse_event(self.MOUSEEVENTF_WHEEL, 0, 0, wheel * 120, 0)
+        for bit, (down_flag, up_flag) in self.FLAGS.items():
+            now = buttons >> bit & 1
+            if now != (self.last >> bit & 1):
+                self.user32.mouse_event(down_flag if now else up_flag, 0, 0, 0, 0)
+        self.last = buttons
+
+    def close(self):
+        self.update(0, 0, 0)
+
+
+class UinputMouse:
+    REL_X, REL_Y, REL_WHEEL = 0, 1, 8
+    EV_REL = 0x02
+    UI_SET_RELBIT = 0x40045566
+    BTN_CODES = {MOUSE_BITS["left"]: 0x110,   # BTN_LEFT
+                 MOUSE_BITS["right"]: 0x111,  # BTN_RIGHT
+                 MOUSE_BITS["middle"]: 0x112} # BTN_MIDDLE
+
+    def __init__(self):
+        import fcntl
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        for ev in (EV_KEY, self.EV_REL, EV_SYN):
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, ev)
+        for code in self.BTN_CODES.values():
+            fcntl.ioctl(self.fd, UI_SET_KEYBIT, code)
+        for code in (self.REL_X, self.REL_Y, self.REL_WHEEL):
+            fcntl.ioctl(self.fd, self.UI_SET_RELBIT, code)
+        dev = struct.pack("<80sHHHHI64i64i64i64i",
+                          b"DeckPad Virtual Mouse",
+                          0x03, 0x045E, 0x028F, 0x0110, 0,
+                          *([0] * 256))
+        os.write(self.fd, dev)
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+        self.last = 0
+        time.sleep(0.3)
+
+    def _write(self, etype, code, value):
+        os.write(self.fd, struct.pack("<qqHHi", 0, 0, etype, code, value))
+
+    def update(self, buttons, dx, dy, wheel=0):
+        dirty = False
+        if dx:
+            self._write(self.EV_REL, self.REL_X, dx)
+            dirty = True
+        if dy:
+            self._write(self.EV_REL, self.REL_Y, dy)
+            dirty = True
+        if wheel:
+            self._write(self.EV_REL, self.REL_WHEEL, wheel)
+            dirty = True
+        for bit, code in self.BTN_CODES.items():
+            now = buttons >> bit & 1
+            if now != (self.last >> bit & 1):
+                self._write(EV_KEY, code, now)
+                dirty = True
+        self.last = buttons
+        if dirty:
+            self._write(EV_SYN, SYN_REPORT, 0)
+
+    def close(self):
+        import fcntl
+        self.update(0, 0, 0)
+        fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        os.close(self.fd)
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 def make_backend():
@@ -197,6 +304,12 @@ def make_backend():
              "(no virtual gamepad backend available)")
 
 
+def make_mouse():
+    if sys.platform == "win32":
+        return WindowsMouse()
+    return UinputMouse()
+
+
 def main():
     ap = argparse.ArgumentParser(description="DeckPad receiver")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
@@ -205,6 +318,7 @@ def main():
     args = ap.parse_args()
 
     backend = make_backend()
+    mouse = make_mouse()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -218,7 +332,18 @@ def main():
     last_packet = 0.0
     last_seq = 0
     sender = None
+    sender_addr = [None]  # full (ip, port) of the Deck, for rumble replies
     neutralized = True
+
+    def send_rumble(large, small):
+        addr = sender_addr[0]
+        if addr:
+            try:
+                sock.sendto(RUMBLE_PREFIX + bytes([large, small]), addr)
+            except OSError:
+                pass
+
+    backend.register_rumble(send_rumble)
 
     try:
         while True:
@@ -227,8 +352,9 @@ def main():
             except socket.timeout:
                 if not neutralized and time.time() - last_packet > FAILSAFE_SECONDS:
                     backend.update(0, 0, 0, 0, 0, 0, 0)
+                    mouse.update(0, 0, 0, 0)
                     neutralized = True
-                    print("Signal lost — controller reset to neutral")
+                    print("Signal lost - controller reset to neutral")
                 continue
 
             if data == DISCOVER_MSG:
@@ -236,7 +362,8 @@ def main():
                 continue
             if len(data) != STATE_SIZE:
                 continue
-            magic, seq, buttons, lx, ly, rx, ry, lt, rt = struct.unpack(STATE_FMT, data)
+            magic, seq, buttons, lx, ly, rx, ry, lt, rt, mdx, mdy, mwh = \
+                struct.unpack(STATE_FMT, data)
             if magic != PROTO_MAGIC:
                 continue
             # Drop stale/reordered packets (allow seq reset on sender restart).
@@ -246,13 +373,16 @@ def main():
             if sender != addr[0]:
                 sender = addr[0]
                 print(f"Receiving from {sender}")
+            sender_addr[0] = addr
             last_packet = time.time()
             neutralized = False
             backend.update(buttons, lx, ly, rx, ry, lt, rt)
+            mouse.update(buttons, mdx, mdy, mwh)
     except KeyboardInterrupt:
         print("\nShutting down")
     finally:
         backend.close()
+        mouse.close()
 
 
 if __name__ == "__main__":

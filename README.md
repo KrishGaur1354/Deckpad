@@ -2,7 +2,8 @@ DeckPad
 =======
 
 DeckPad turns a Steam Deck into a wireless game controller for any PC on
-the same local network. The PC sees a standard Xbox 360 controller; no
+the same local network. The PC sees a standard Xbox 360 controller plus
+a mouse, driven by the Deck's trackpad and (optionally) its gyro; no
 game-side support is required. Inspired by now broken repo of [Deckpad](https://github.com/HelloThisIsFlo/Deckpad)
 by [HelloThisIsFlo](https://github.com/HelloThisIsFlo).
 
@@ -83,6 +84,11 @@ Hold View + Menu inside the app to open the settings menu:
     Stick sensitivity (left/right)          0.1x-2.5x
     Invert left/right Y                     on/off
     Swap A/B, Swap X/Y (Nintendo layout)    on/off
+    Gyro                                    off / mouse / r-stick
+    Gyro sensitivity                        0.1x-5.0x
+    Touch mouse                             on/off
+    Mouse sensitivity                       0.1x-5.0x
+    Rumble                                  on/off
 
 Settings are persisted in config.json next to the scripts. The file also
 supports options the menu does not expose:
@@ -101,11 +107,59 @@ supports options the menu does not expose:
 
             a b x y back guide start ls rs lb rb
             dpad_up dpad_down dpad_left dpad_right
+            mouse_left mouse_right mouse_middle
 
-        Deck-only inputs paddle1..paddle4 (back grips, if Steam Input
-        passes them through) and misc1 may be mapped to any output:
+        ls/rs are the stick clicks (L3/R3). The mouse_* outputs become
+        clicks of the PC mouse, not gamepad buttons.
 
-            "button_map": { "paddle1": "a", "paddle2": "b" }
+        Deck-only inputs paddle1..paddle4 (back grips L4/L5/R4/R5, if
+        Steam Input passes them through) and misc1 may be mapped to any
+        output, e.g. back grips as A/B or as mouse clicks:
+
+            "button_map": { "paddle1": "a", "paddle2": "mouse_left" }
+
+GYRO AND TOUCH MOUSE
+--------------------
+
+The Deck can also drive the PC's mouse pointer:
+
+  Touch mouse ("Touch mouse" setting, default on)
+        In Steam Input, map a trackpad "As Mouse" (the right trackpad
+        already is in the standard Gamepad template). Its motion,
+        clicks and scrolling are streamed to the PC as real mouse
+        movement, left/right/middle clicks and wheel events. Great for
+        desktop use or games that want a mouse.
+
+  Mouse mode (toggle with View + Y, any time outside the menu)
+        A quick-switch mode for using the PC like a desktop: the
+        trackpad drives the cursor (even if "Touch mouse" is off), the
+        right stick glides it, and the triggers click: RT = left
+        click, LT = right click. While active those inputs are hidden
+        from the gamepad, and a banner on the status screen reminds
+        you how to leave. Cursor speed follows "Mouse sensitivity".
+
+  Gyro ("Gyro" setting, default off)
+        mouse    tilting the Deck moves the PC pointer (gyro aiming
+                 for mouse-driven shooters).
+        r-stick  gyro is added to the right stick instead, for
+                 controller-native games.
+
+        If the status screen says "sensor not available", Steam Input
+        is holding the gyro: in the game's controller settings set
+        Gyro Behavior to "None" (or disable Steam Input for DeckPad)
+        so the raw sensor reaches the app.
+
+  Rumble ("Rumble" setting, default on)
+        Game rumble on the PC is sent back over the network and played
+        on the Deck's own motors. Windows receiver only (the Linux
+        uinput backend cannot report force feedback).
+
+The Deck's status screen also shows the network round-trip time
+("Ping") and the Deck's battery level next to the packet counter.
+
+Note: both ends speak protocol DKP2 now. If the Deck cannot find a
+receiver after updating, the PC is still running an old build update
+both sides together (rebuild the binaries in dist/ if you use them).
 
 RUNNING THE RECEIVER FROM SOURCE
 --------------------------------
@@ -143,8 +197,17 @@ IF SOMETHING GOES WRONG
     network and the receiver is running. If the router isolates
     clients, set "target_ip" in config.json to the PC's IP.
 
-  - Latency: typically a few ms on the same Wi-Fi network. A 5 GHz
-    network helps most; raising the send rate helps marginally.
+  - L3/R3 or back grips "not working": watch the status screen while
+    pressing them. L3/R3 light up as L3/R3 in the button grid; back
+    grips appear in the "grips (raw)" row only if your Steam Input
+    template passes them through (map L4/L5/R4/R5 in Steam Input, and
+    give them an output in config.json's "button_map"). If nothing
+    lights up, Steam Input is swallowing the input — fix the template,
+    not DeckPad.
+
+  - Latency: typically a few ms on the same Wi-Fi network check the
+    "Ping" readout on the Deck's status screen. A 5 GHz network helps
+    most; raising the send rate helps marginally.
 
   - Desktop-mode test on the Deck:
         $ ./DeckPad.sh --windowed
@@ -162,7 +225,8 @@ HOW IT WORKS
 
   deckpad_receiver.py  Runs on the PC. Creates a virtual Xbox 360
                        controller (ViGEmBus on Windows, uinput on
-                       Linux) that any game recognizes.
+                       Linux) that any game recognizes, plus a virtual
+                       mouse for the trackpad and gyro-aim features.
 
   Discovery is UDP broadcast on port 30666. On connection loss the
   virtual pad resets to neutral after 0.5 s.
